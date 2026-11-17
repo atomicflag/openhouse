@@ -954,9 +954,15 @@ class Device : public ITrackedDeviceServerDriver {
     // Squeeze: the Index reports finger proximity (middle/ring/pinky) and grip force.
     const double curl = (s.fingerMiddle + s.fingerRing + s.fingerPinky) / 3.0;
     const double grip = std::max(curl, s.gripForce);
+    // grip/touch is the grip's own state, not the finger average: with four fingers resting
+    // on the finger pads and nothing loading the grip force sensor, this reads as not held.
+    // The report has no grip-touch bit (the extended record's touch byte maps trigger,
+    // system, A, B and thumbstick), so force is the only thing available; 0.1 is the
+    // threshold index_controller_profile.json uses for /input/grip activity.
+    const double gripTouch = s.gripForce > 0.1;
     const double values[InputCount] = {
         double(s.systemClick), double(s.systemTouch), double(s.aClick), double(s.aTouch), double(s.bClick),
-        double(s.bTouch), double(s.triggerClick), double(s.triggerTouch), s.trigger, double(curl > 0.7),
+        double(s.bTouch), double(s.triggerClick), double(s.triggerTouch), s.trigger, double(gripTouch),
         grip, s.gripForce, double(s.thumbstickClick), double(s.thumbstickTouch), s.thumbstickX, s.thumbstickY,
         double(s.trackpadTouch), s.trackpadX, s.trackpadY, s.trackpadForce, s.fingerIndex, s.fingerMiddle,
         s.fingerRing, s.fingerPinky, double(s.trackpadClick), double(s.gripClick), double(s.menuClick)};
