@@ -198,14 +198,16 @@ constexpr int kStateFrame[9] = {-1, -1, 32, 35, 37, 33, 5, 4, 1};
 constexpr int kOpen = 0, kTriggerCurl = 30;
 // hand_right_poses.glb (WithoutController thumb, 0x280cd0)
 constexpr int kThumbRest = 13, kThumbOut = 10, kThumbBack = 14;
+// Keyframe 4 is the thumb the stock driver holds on the pad: 17/28/102 deg of bend, the
+// shape that reads as open. Keyframe 13 (12/51/105) is the thumb lying flat, which SteamVR
+// summarises as 0.77 and an app calls a fist.
+constexpr int kThumbPad = 4;
 }  // namespace
 
 bool HandSkeleton::Load(const std::string& path, bool left, std::string* error) {
   try {
     glove_ = LoadFrames(path, left);
     if (glove_.size() < 38) throw std::runtime_error("unexpected Valve hand pose library " + path);
-    grip_ = glove_[1];
-    FixAux(grip_);
     // The stock WithoutController hand: SteamVR's shared hand animations, next to
     // the Index driver's squeeze clip. Without them, the glove library's grip pose
     // stands in for the fist.
@@ -224,6 +226,16 @@ bool HandSkeleton::Load(const std::string& path, bool left, std::string* error) 
       hand_.clear(); close_.clear(); squeeze_.clear();
       if (error) *error = std::string("WithoutController fist unavailable (") + e.what() + "); using the grip pose";
     }
+    // SteamVR measures how far each finger has closed against the grip limit it is handed at
+    // creation, so that reference is the number an app reads. Stock passes the shared hand
+    // library's grip pose: hand_right_poses.glb frame 1, the pose the close clip ends at. It is
+    // also what SteamVR falls back to when a driver passes none, and it is the reference the
+    // probe capture fits to (mean error 0.011 over the thumb chain, against 0.146 for the glove
+    // library's frame 1). The glove library's frame 1 is a tighter grip, so with it as the
+    // reference the thumb reads fully curled in every pose and both the pad and A/B come
+    // through as a fist.
+    grip_ = hand_.empty() ? glove_[1] : hand_[1];
+    FixAux(grip_);
     left_ = left;
     state_ = {};
     state_.thumbFrom = glove_[size_t(kStateFrame[8])];
@@ -249,6 +261,12 @@ int HandSkeleton::ThumbState(const ControllerInput& in) {
   if (in.trackpadTouch) return 0;
   if (!in.thumbstickTouch && !in.thumbstickClick && in.thumbstickX == 0 && in.thumbstickY == 0) {
     if (a == 1 && b == 1) return 2;
+    // A or B touched on its own. Stock's A-button override (0x280bc0) puts the thumb on the
+    // button at any level, not only when pressed; the port only had the pressed levels, so a
+    // thumb resting on A or B selected the rest pose and was indistinguishable from the thumb
+    // lying on the trackpad. The two poses the user compares differed only in these bits.
+    if (a == 1) return 3;
+    if (b == 1) return 4;
     if (system == 2) return 6;
     return system == 1 ? 7 : 8;
   }
@@ -374,10 +392,13 @@ Bones HandSkeleton::Current(bool withController) const {
     Blend(out, fist(s.fist[2]), s.fist[2], kRing);
     Blend(out, fist(s.fist[3]), s.fist[3], kPinky);
     // 0x280cd0: the thumb between rest, out over the stick, back on the pad and
-    // curled onto the face buttons.
-    Bones thumb = s.thumbX < 0 ? Lerp(hand_[kThumbRest], fist(s.thumbClose), -s.thumbX)
-                               : Lerp(hand_[kThumbRest], hand_[kThumbOut], s.thumbX);
-    thumb = s.thumbY < 0 ? Lerp(thumb, hand_[kThumbBack], -s.thumbY) : Lerp(thumb, hand_[kThumbRest], s.thumbY);
+    // curled onto the face buttons. On the pad the neutral is the lifted keyframe, not the
+    // flat one: the thumb resting on the pad has to read as open, and keyframe 13 there gives
+    // the same summary value as a fist.
+    const Bones& neutral = s.thumbState == 0 ? hand_[kThumbPad] : hand_[kThumbRest];
+    Bones thumb = s.thumbX < 0 ? Lerp(neutral, fist(s.thumbClose), -s.thumbX)
+                               : Lerp(neutral, hand_[kThumbOut], s.thumbX);
+    thumb = s.thumbY < 0 ? Lerp(thumb, hand_[kThumbBack], -s.thumbY) : Lerp(thumb, neutral, s.thumbY);
     Blend(out, Lerp(thumb, rest, s.thumbRaise), 1, kThumb);
   } else {
     // No shared animations installed: close onto the glove library's grip.

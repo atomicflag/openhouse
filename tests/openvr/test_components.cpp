@@ -507,6 +507,44 @@ TEST(Skeleton, ThumbReleasesAndGlidesBetweenButtons) {
   EXPECT_LT((last - tip(hand.Evaluate(stick, false))).norm(), 2e-3f) << "settles on the stick";
 }
 
+// What an app reads for the thumb is SteamVR's own number: how far each joint of the chain is
+// along the range of the grip limit the driver handed it at creation. The two poses the capture
+// holds must stay on opposite sides of the gesture threshold, so the reference matters as much
+// as the pose: against the glove library's tighter grip the thumb reads fully curled in both and
+// the pad is indistinguishable from A/B.
+TEST(Skeleton, ThumbReadsNeutralOnThePadAndFistOnA) {
+  const char* file = std::getenv("LH_HAND_POSES");
+  if (!file) GTEST_SKIP() << "set LH_HAND_POSES to Valve's installed vr_glove_right_poses.glb";
+  lh::openvr::HandSkeleton hand;
+  std::string error;
+  ASSERT_TRUE(hand.Load(file, false, &error)) << error;
+  auto angle = [](const Eigen::Quaternionf& a, const Eigen::Quaternionf& b) {
+    return 2.f * std::acos(std::min(1.f, std::abs(a.dot(b)))) * 57.29578f;
+  };
+  // SteamVR's summary as the probe capture fits it: the mean over the thumb chain of how far
+  // each joint is along the grip limit's range, measured in Model space from the resting pose.
+  auto reported = [&](const lh::ControllerInput& in) {
+    const auto pose = Globals(hand.Evaluate(in, false)), base = Globals(hand.Evaluate({}, false));
+    const auto ref = Globals(hand.GripLimit());
+    float sum = 0;
+    for (int joint : {2, 3, 4, 5}) {
+      const Eigen::Quaternionf p{pose[size_t(joint)].rotation()}, r{ref[size_t(joint)].rotation()}, b{base[size_t(joint)].rotation()};
+      sum += std::min(1.f, angle(p, b) / std::max(1e-3f, angle(r, b)));
+    }
+    return sum / 4.f;
+  };
+  const auto fingers = [](lh::ControllerInput& in) {
+    in.fingerIndex = .82f; in.fingerMiddle = .89f; in.fingerRing = 1.f; in.fingerPinky = .79f;
+  };
+  lh::ControllerInput rest, pad, a;
+  pad.trackpadTouch = true; pad.trackpadX = .04f; pad.trackpadY = -.04f;  // held, thumb lying on the pad
+  fingers(pad); fingers(a); a.aTouch = true;                              // the same hold, thumb on A
+  EXPECT_LT(reported(rest), 0.1f) << "the thumb lying open reads open";
+  EXPECT_LT(reported(pad), 0.55f) << "the thumb on the pad reads Neutral: " << reported(pad);
+  EXPECT_GT(reported(a), 0.9f) << "the thumb on A reads Fist: " << reported(a);
+  EXPECT_GT(reported(a) - reported(pad), 0.4f) << "the two poses read the same: " << reported(pad) << " vs " << reported(a);
+}
+
 TEST(Telemetry, ServesHelloBacklogStateAndLogsOnLoopback) {
   lh::openvr::TelemetryServer server;
   const int port = 36840 + 100 + int(lh::platform::ProcessId() % 500);
